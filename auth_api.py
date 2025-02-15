@@ -8,7 +8,7 @@ import uuid
 app = Flask(__name__)
 CORS(app)
 
-SECRET_KEY = "MySecretKey123"  # Change this to your own secret key
+SECRET_KEY = "MySecretKey123"
 
 # Initialize Database
 def init_db():
@@ -35,21 +35,20 @@ def register():
     username = data.get("username", "").strip()
     password = data.get("password", "").strip()
     secret = data.get("secret", "")
-    duration = int(data.get("duration", 30))  # Default to 30 days
+    duration_minutes = int(data.get("expires_in", 43200))  # Default: 30 days (43200 minutes)
 
-    # Validate input
     if not username or not password:
         return jsonify({"error": "Username and password are required"}), 400
 
     if secret != SECRET_KEY:
         return jsonify({"error": "Unauthorized access"}), 403
 
-    if duration not in [1, 3, 7, 30]:  
-        return jsonify({"error": "Invalid duration. Choose 1, 3, 7, or 30 days"}), 400
+    # Convert minutes to days
+    duration_days = duration_minutes // 1440
 
     # Hash password
     hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-    expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=duration)).isoformat()
+    expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=duration_days)).isoformat()
 
     try:
         conn = sqlite3.connect("users.db")
@@ -58,7 +57,7 @@ def register():
                        (username, hashed_pw, expires_at))
         conn.commit()
         conn.close()
-        return jsonify({"message": "User registered successfully", "expires_in": duration}), 201
+        return jsonify({"message": "User registered successfully", "expires_in": duration_days}), 201
     except sqlite3.IntegrityError:
         return jsonify({"error": "Username already exists"}), 400
 
@@ -92,8 +91,10 @@ def login():
 
     days_remaining = (expiry_date - datetime.datetime.utcnow()).days
 
-    # Check if account is expired
+    # Expired account - clear session token & prevent login
     if days_remaining < 0:
+        cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
+        conn.commit()
         conn.close()
         return jsonify({"error": "Your account has expired. Please contact support."}), 403
 
@@ -102,14 +103,7 @@ def login():
         conn.close()
         return jsonify({"error": "Invalid username or password"}), 401
 
-    # Prevent duplicate logins unless session expires
-    if session_token:
-        conn.close()
-        return jsonify({
-            "error": "This account is already logged in on another device. Please log out first."
-        }), 403
-
-    # Generate a new session token
+    # Generate a new session token if the old one has expired
     new_session_token = str(uuid.uuid4())
     cursor.execute("UPDATE users SET session_token=? WHERE username=?", (new_session_token, username))
     conn.commit()
