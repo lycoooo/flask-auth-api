@@ -8,7 +8,7 @@ import uuid
 app = Flask(__name__)
 CORS(app)
 
-SECRET_KEY = "MySecretKey123"
+SECRET_KEY = "MySecretKey123"  # Change this to your own secret key
 
 # Initialize Database
 def init_db():
@@ -43,12 +43,14 @@ def register():
     if secret != SECRET_KEY:
         return jsonify({"error": "Unauthorized access"}), 403
 
-    # Convert minutes to days
-    duration_days = duration_minutes // 1440
+    if duration_minutes <= 0:
+        return jsonify({"error": "Invalid expiration time"}), 400
+
+    # Convert minutes to expiration timestamp
+    expires_at = (datetime.datetime.utcnow() + datetime.timedelta(minutes=duration_minutes)).isoformat()
 
     # Hash password
     hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-    expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=duration_days)).isoformat()
 
     try:
         conn = sqlite3.connect("users.db")
@@ -57,7 +59,7 @@ def register():
                        (username, hashed_pw, expires_at))
         conn.commit()
         conn.close()
-        return jsonify({"message": "User registered successfully", "expires_in": duration_days}), 201
+        return jsonify({"message": "User registered successfully", "expires_in": duration_minutes}), 201
     except sqlite3.IntegrityError:
         return jsonify({"error": "Username already exists"}), 400
 
@@ -89,12 +91,10 @@ def login():
         conn.close()
         return jsonify({"error": "Invalid expiration date format"}), 500
 
-    days_remaining = (expiry_date - datetime.datetime.utcnow()).days
+    minutes_remaining = (expiry_date - datetime.datetime.utcnow()).total_seconds() / 60
 
-    # Expired account - clear session token & prevent login
-    if days_remaining < 0:
-        cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
-        conn.commit()
+    # Check if account is expired
+    if minutes_remaining <= 0:
         conn.close()
         return jsonify({"error": "Your account has expired. Please contact support."}), 403
 
@@ -103,7 +103,14 @@ def login():
         conn.close()
         return jsonify({"error": "Invalid username or password"}), 401
 
-    # Generate a new session token if the old one has expired
+    # Prevent duplicate logins unless session expires
+    if session_token:
+        conn.close()
+        return jsonify({
+            "error": "This account is already logged in on another device. Please log out first."
+        }), 403
+
+    # Generate a new session token
     new_session_token = str(uuid.uuid4())
     cursor.execute("UPDATE users SET session_token=? WHERE username=?", (new_session_token, username))
     conn.commit()
@@ -112,7 +119,7 @@ def login():
     return jsonify({
         "message": "✅ Login successful!",
         "session_token": new_session_token,
-        "expires_in": days_remaining
+        "expires_in": round(minutes_remaining)  # Convert to minutes
     }), 200
 
 # ----------------------- LOGOUT -----------------------
@@ -154,14 +161,14 @@ def check_expiration():
 
     expires_at = result[0]
     expiry_date = datetime.datetime.fromisoformat(expires_at)
-    days_remaining = (expiry_date - datetime.datetime.utcnow()).days
+    minutes_remaining = (expiry_date - datetime.datetime.utcnow()).total_seconds() / 60
 
     conn.close()
     
-    if days_remaining < 0:
+    if minutes_remaining <= 0:
         return jsonify({"error": "Account expired"}), 403
     
-    return jsonify({"message": f"Account is active, expires in {days_remaining} days"}), 200
+    return jsonify({"message": f"Account is active, expires in {round(minutes_remaining)} minutes"}), 200
 
 # ----------------------- RUN THE APP -----------------------
 if __name__ == "__main__":
