@@ -8,7 +8,7 @@ import uuid
 app = Flask(__name__)
 CORS(app)
 
-SECRET_KEY = "MySecretKey123"  # Change this to your own secret
+SECRET_KEY = "MySecretKey123"  # Change this to your own secret key
 
 # Initialize Database
 def init_db():
@@ -28,20 +28,27 @@ def init_db():
 
 init_db()
 
-# Register a New User (Only Owner Can)
+# ----------------------- REGISTER -----------------------
 @app.route("/register", methods=["POST"])
 def register():
     data = request.json
-    username = data["username"]
-    password = data["password"].encode("utf-8")
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
     secret = data.get("secret", "")
     duration = int(data.get("duration", 30))  # Default to 30 days
 
-    # Only allow account creation if secret key is correct
+    # Validate input
+    if not username or not password:
+        return jsonify({"error": "Username and password are required"}), 400
+
     if secret != SECRET_KEY:
         return jsonify({"error": "Unauthorized access"}), 403
 
-    hashed_pw = bcrypt.hashpw(password, bcrypt.gensalt())
+    if duration not in [1, 3, 7, 30]:  
+        return jsonify({"error": "Invalid duration. Choose 1, 3, 7, or 30 days"}), 400
+
+    # Hash password
+    hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
     expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=duration)).isoformat()
 
     try:
@@ -51,16 +58,19 @@ def register():
                        (username, hashed_pw, expires_at))
         conn.commit()
         conn.close()
-        return jsonify({"message": "User registered successfully", "expires_at": expires_at}), 201
+        return jsonify({"message": "User registered successfully", "expires_in": duration}), 201
     except sqlite3.IntegrityError:
         return jsonify({"error": "Username already exists"}), 400
 
-# Login User (Anyone with an account can log in)
+# ----------------------- LOGIN -----------------------
 @app.route("/login", methods=["POST"])
 def login():
     data = request.json
-    username = data["username"]
-    password = data["password"].encode("utf-8")
+    username = data.get("username", "").strip()
+    password = data.get("password", "").encode("utf-8")
+
+    if not username or not password:
+        return jsonify({"error": "Username and password are required"}), 400
 
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
@@ -73,58 +83,92 @@ def login():
     
     stored_hash, expires_at, session_token = result
 
-    # Convert expiration date to days remaining
-    expiry_date = datetime.datetime.fromisoformat(expires_at)
+    # Convert expiration date
+    try:
+        expiry_date = datetime.datetime.fromisoformat(expires_at)
+    except ValueError:
+        conn.close()
+        return jsonify({"error": "Invalid expiration date format"}), 500
+
     days_remaining = (expiry_date - datetime.datetime.utcnow()).days
 
     # Check if account is expired
     if days_remaining < 0:
         conn.close()
-        return jsonify({"error": "Account has expired"}), 403
+        return jsonify({"error": "Your account has expired. Please contact support."}), 403
 
     # Check password
     if not bcrypt.checkpw(password, stored_hash):
         conn.close()
         return jsonify({"error": "Invalid username or password"}), 401
 
-    # Enforce single session per user
+    # Prevent duplicate logins unless session expires
     if session_token:
         conn.close()
-        return jsonify({"error": "User already logged in on another device"}), 403
+        return jsonify({
+            "error": "This account is already logged in on another device. Please log out first."
+        }), 403
 
-    # Generate new session token
+    # Generate a new session token
     new_session_token = str(uuid.uuid4())
     cursor.execute("UPDATE users SET session_token=? WHERE username=?", (new_session_token, username))
     conn.commit()
     conn.close()
 
     return jsonify({
-        "message": "Login successful!",
+        "message": "✅ Login successful!",
         "session_token": new_session_token,
-        "expires_at": days_remaining  # Send remaining days
+        "expires_in": days_remaining
     }), 200
 
-# Logout User
+# ----------------------- LOGOUT -----------------------
 @app.route("/logout", methods=["POST"])
 def logout():
     data = request.json
-    username = data["username"]
-    session_token = data.get("session_token")
-    
+    username = data.get("username", "").strip()
+    session_token = data.get("session_token", "").strip()
+
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
     cursor.execute("SELECT session_token FROM users WHERE username=?", (username,))
     result = cursor.fetchone()
-    
+
     if not result or result[0] != session_token:
         conn.close()
         return jsonify({"error": "Invalid session"}), 401
-    
+
     cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
     conn.commit()
     conn.close()
-    
-    return jsonify({"message": "Logout successful"}), 200
 
+    return jsonify({"message": "✅ Logout successful"}), 200
+
+# ----------------------- CHECK EXPIRATION -----------------------
+@app.route("/check_expiration", methods=["POST"])
+def check_expiration():
+    data = request.json
+    username = data.get("username", "").strip()
+
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT expires_at FROM users WHERE username=?", (username,))
+    result = cursor.fetchone()
+
+    if not result:
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+
+    expires_at = result[0]
+    expiry_date = datetime.datetime.fromisoformat(expires_at)
+    days_remaining = (expiry_date - datetime.datetime.utcnow()).days
+
+    conn.close()
+    
+    if days_remaining < 0:
+        return jsonify({"error": "Account expired"}), 403
+    
+    return jsonify({"message": f"Account is active, expires in {days_remaining} days"}), 200
+
+# ----------------------- RUN THE APP -----------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
