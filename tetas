@@ -1,0 +1,7 @@
+cd C:\Users\YourName\Downloads\x777  # Navigate to your project folder
+git init  # Initialize Git
+git add .  # Add all files
+git commit -m "Initial commit"
+git branch -M main  # Set the main branch
+git remote add origin https://github.com/lyco123/flask-auth-api.git
+git push -u origin main  # Push to GitHub
