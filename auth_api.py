@@ -6,6 +6,8 @@ import bcrypt
 app = Flask(__name__)
 CORS(app)
 
+SECRET_KEY = "MySecretKey123"  # Change this to your own secret
+
 # Initialize Database
 def init_db():
     conn = sqlite3.connect("users.db")
@@ -22,12 +24,17 @@ def init_db():
 
 init_db()
 
-# Register a New User
+# Register a New User (Only Owner Can)
 @app.route("/register", methods=["POST"])
 def register():
     data = request.json
     username = data["username"]
     password = data["password"].encode("utf-8")
+    secret = data.get("secret", "")
+
+    # Only allow account creation if secret key is correct
+    if secret != SECRET_KEY:
+        return jsonify({"error": "Unauthorized access"}), 403
 
     hashed_pw = bcrypt.hashpw(password, bcrypt.gensalt())
 
@@ -41,7 +48,7 @@ def register():
     except sqlite3.IntegrityError:
         return jsonify({"error": "Username already exists"}), 400
 
-# Login User
+# Login User (Anyone with an account can log in)
 @app.route("/login", methods=["POST"])
 def login():
     data = request.json
