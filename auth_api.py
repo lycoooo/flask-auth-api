@@ -35,13 +35,14 @@ def register():
     username = data["username"]
     password = data["password"].encode("utf-8")
     secret = data.get("secret", "")
+    duration = int(data.get("duration", 30))  # Default to 30 days
 
     # Only allow account creation if secret key is correct
     if secret != SECRET_KEY:
         return jsonify({"error": "Unauthorized access"}), 403
 
     hashed_pw = bcrypt.hashpw(password, bcrypt.gensalt())
-    expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=30)).isoformat()
+    expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=duration)).isoformat()
 
     try:
         conn = sqlite3.connect("users.db")
@@ -50,7 +51,7 @@ def register():
                        (username, hashed_pw, expires_at))
         conn.commit()
         conn.close()
-        return jsonify({"message": "User registered successfully"}), 201
+        return jsonify({"message": "User registered successfully", "expires_at": expires_at}), 201
     except sqlite3.IntegrityError:
         return jsonify({"error": "Username already exists"}), 400
 
@@ -71,9 +72,13 @@ def login():
         return jsonify({"error": "Invalid username or password"}), 401
     
     stored_hash, expires_at, session_token = result
-    
+
+    # Convert expiration date to days remaining
+    expiry_date = datetime.datetime.fromisoformat(expires_at)
+    days_remaining = (expiry_date - datetime.datetime.utcnow()).days
+
     # Check if account is expired
-    if datetime.datetime.utcnow() > datetime.datetime.fromisoformat(expires_at):
+    if days_remaining < 0:
         conn.close()
         return jsonify({"error": "Account has expired"}), 403
 
@@ -86,14 +91,18 @@ def login():
     if session_token:
         conn.close()
         return jsonify({"error": "User already logged in on another device"}), 403
-    
+
     # Generate new session token
     new_session_token = str(uuid.uuid4())
     cursor.execute("UPDATE users SET session_token=? WHERE username=?", (new_session_token, username))
     conn.commit()
     conn.close()
 
-    return jsonify({"message": "Login successful!", "session_token": new_session_token}), 200
+    return jsonify({
+        "message": "Login successful!",
+        "session_token": new_session_token,
+        "expires_at": days_remaining  # Send remaining days
+    }), 200
 
 # Logout User
 @app.route("/logout", methods=["POST"])
