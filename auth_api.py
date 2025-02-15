@@ -96,7 +96,7 @@ def login():
     # Check if account is expired
     if minutes_remaining <= 0:
         conn.close()
-        return jsonify({"error": "Your account has expired. Please contact support."}), 403
+        return jsonify({"error": "Your account has expired. Please contact My Telegram @lyco0202."}), 403
 
     # Check password
     if not bcrypt.checkpw(password, stored_hash):
