@@ -78,7 +78,7 @@ def login():
     if not result:
         conn.close()
         return jsonify({"error": "Invalid username or password"}), 401  # Username not found
-    
+
     stored_hash, login_at, duration_minutes, session_token = result
 
     # If the user has logged in before, check expiration
@@ -87,23 +87,23 @@ def login():
         expiration_time = login_time + datetime.timedelta(minutes=duration_minutes)
 
         if datetime.datetime.utcnow() > expiration_time:
-            # Auto remove session token when expired
+            # Auto-expire account
             cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
             conn.commit()
             conn.close()
             return jsonify({"error": "This account has expired. Contact the owner."}), 403
 
+    # Prevent duplicate logins (allow only one active session per user)
+    if session_token:
+        conn.close()
+        return jsonify({
+            "error": "This account is already logged in on another device."
+        }), 403  # Removed "Please log out first"
+
     # Check password
     if not bcrypt.checkpw(password, stored_hash):
         conn.close()
         return jsonify({"error": "Invalid username or password"}), 401  # Wrong password
-
-    # Prevent duplicate logins
-    if session_token:
-        conn.close()
-        return jsonify({
-            "error": "This account is already logged in on another device. Please log out first."
-        }), 403
 
     # Generate a new session token
     new_session_token = str(uuid.uuid4())
