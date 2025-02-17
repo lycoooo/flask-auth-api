@@ -74,28 +74,29 @@ def login():
     cursor = conn.cursor()
     cursor.execute("SELECT password_hash, login_at, duration_minutes, session_token FROM users WHERE username=?", (username,))
     result = cursor.fetchone()
-    
+
     if not result:
         conn.close()
-        return jsonify({"error": "Invalid username or password"}), 401
+        return jsonify({"error": "Invalid username or password"}), 401  # Username not found
     
     stored_hash, login_at, duration_minutes, session_token = result
 
-    # Check if the account has expired
+    # If the user has logged in before, check expiration
     if login_at:
         login_time = datetime.datetime.fromisoformat(login_at)
         expiration_time = login_time + datetime.timedelta(minutes=duration_minutes)
+
         if datetime.datetime.utcnow() > expiration_time:
-            # Auto logout on expiry
+            # Auto remove session token when expired
             cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
             conn.commit()
             conn.close()
-            return jsonify({"error": "Account expired. Contact the owner."}), 403
+            return jsonify({"error": "This account has expired. Contact the owner."}), 403
 
     # Check password
     if not bcrypt.checkpw(password, stored_hash):
         conn.close()
-        return jsonify({"error": "Invalid username or password"}), 401
+        return jsonify({"error": "Invalid username or password"}), 401  # Wrong password
 
     # Prevent duplicate logins
     if session_token:
@@ -121,6 +122,7 @@ def login():
         "session_token": new_session_token,
         "expires_in": round(minutes_remaining)
     }), 200
+
 
 # ----------------------- CHECK EXPIRATION -----------------------
 @app.route("/check_expiration", methods=["POST"])
