@@ -63,7 +63,7 @@ def register():
     except sqlite3.IntegrityError:
         return jsonify({"error": "Username already exists"}), 400
 
-# ----------------------- LOGIN -----------------------
+# ----------------------- LOGIN (Prevent Duplicate Logins) -----------------------
 @app.route("/login", methods=["POST"])
 def login():
     data = request.json
@@ -84,28 +84,25 @@ def login():
     
     stored_hash, login_at, duration_minutes, session_token = result
 
-    # Check password
-    if not bcrypt.checkpw(password, stored_hash):
-        conn.close()
-        return jsonify({"error": "Invalid username or password"}), 401
-
-    # If already logged in, return remaining time
+    # If already logged in, prevent duplicate login
     if session_token and login_at:
         login_time = datetime.datetime.fromisoformat(login_at)
         expiration_time = login_time + datetime.timedelta(minutes=duration_minutes)
         minutes_remaining = (expiration_time - datetime.datetime.utcnow()).total_seconds() / 60
 
-        if minutes_remaining <= 0:
+        if minutes_remaining > 0:
             conn.close()
-            return jsonify({"error": "Your account has expired. Please contact My Telegram @lyco0202."}), 403
+            return jsonify({
+                "error": "This account is already logged in on another device. Please log out first.",
+                "expires_in": round(minutes_remaining)
+            }), 403
 
-        return jsonify({
-            "message": "✅ Already logged in.",
-            "session_token": session_token,
-            "expires_in": round(minutes_remaining)
-        }), 200
+    # Check password
+    if not bcrypt.checkpw(password, stored_hash):
+        conn.close()
+        return jsonify({"error": "Invalid username or password"}), 401
 
-    # First-time login: set login_at
+    # First-time login or expired session: generate a new session token
     new_session_token = str(uuid.uuid4())
     login_at = datetime.datetime.utcnow().isoformat()
 
