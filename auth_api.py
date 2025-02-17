@@ -84,7 +84,7 @@ def login():
     
     stored_hash, login_at, duration_minutes, session_token = result
 
-    # Check if the session has expired
+    # Check if the account has expired
     if login_at:
         login_time = datetime.datetime.fromisoformat(login_at)
         expiration_time = login_time + datetime.timedelta(minutes=duration_minutes)
@@ -93,7 +93,12 @@ def login():
             cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
             conn.commit()
             conn.close()
-            return jsonify({"error": "Session expired. Please log in again."}), 403
+            return jsonify({"error": "Account expired. Contact the owner."}), 403
+
+    # Check password
+    if not bcrypt.checkpw(password, stored_hash):
+        conn.close()
+        return jsonify({"error": "Invalid username or password"}), 401
 
     # Prevent duplicate logins
     if session_token:
@@ -102,7 +107,7 @@ def login():
             "error": "This account is already logged in on another device. Please log out first."
         }), 403
 
-    # First-time login or expired session: generate a new session token
+    # Generate a new session token
     new_session_token = str(uuid.uuid4())
     login_at = datetime.datetime.utcnow().isoformat()
 
