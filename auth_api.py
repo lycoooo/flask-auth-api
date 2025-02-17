@@ -63,7 +63,7 @@ def register():
     except sqlite3.IntegrityError:
         return jsonify({"error": "Username already exists"}), 400
 
-# ----------------------- LOGIN (Prevent Duplicate Logins) -----------------------
+# ----------------------- LOGIN -----------------------
 @app.route("/login", methods=["POST"])
 def login():
     data = request.json
@@ -84,23 +84,23 @@ def login():
     
     stored_hash, login_at, duration_minutes, session_token = result
 
-    # If already logged in, prevent duplicate login
-    if session_token and login_at:
+    # Check if the session has expired
+    if login_at:
         login_time = datetime.datetime.fromisoformat(login_at)
         expiration_time = login_time + datetime.timedelta(minutes=duration_minutes)
-        minutes_remaining = (expiration_time - datetime.datetime.utcnow()).total_seconds() / 60
-
-        if minutes_remaining > 0:
+        if datetime.datetime.utcnow() > expiration_time:
+            # Auto logout on expiry
+            cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
+            conn.commit()
             conn.close()
-            return jsonify({
-                "error": "This account is already logged in on another device. Please log out first.",
-                "expires_in": round(minutes_remaining)
-            }), 403
+            return jsonify({"error": "Session expired. Please log in again."}), 403
 
-    # Check password
-    if not bcrypt.checkpw(password, stored_hash):
+    # Prevent duplicate logins
+    if session_token:
         conn.close()
-        return jsonify({"error": "Invalid username or password"}), 401
+        return jsonify({
+            "error": "This account is already logged in on another device. Please log out first."
+        }), 403
 
     # First-time login or expired session: generate a new session token
     new_session_token = str(uuid.uuid4())
@@ -147,31 +147,37 @@ def logout():
 def check_expiration():
     data = request.json
     username = data.get("username", "").strip()
+    session_token = data.get("session_token", "").strip()
 
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT login_at, duration_minutes FROM users WHERE username=?", (username,))
+    cursor.execute("SELECT login_at, duration_minutes, session_token FROM users WHERE username=?", (username,))
     result = cursor.fetchone()
 
     if not result:
         conn.close()
         return jsonify({"error": "User not found"}), 404
 
-    login_at, duration_minutes = result
+    login_at, duration_minutes, stored_token = result
 
-    if not login_at:
+    # If session token is invalid, user is already logged out
+    if stored_token != session_token:
         conn.close()
-        return jsonify({"message": "User has not logged in yet"}), 200
+        return jsonify({"error": "Session invalid. Please log in again."}), 403
 
+    # Calculate remaining time
     login_time = datetime.datetime.fromisoformat(login_at)
     expiration_time = login_time + datetime.timedelta(minutes=duration_minutes)
     minutes_remaining = (expiration_time - datetime.datetime.utcnow()).total_seconds() / 60
 
-    conn.close()
-    
+    # If session expired, log out user automatically
     if minutes_remaining <= 0:
-        return jsonify({"error": "Account expired"}), 403
-    
+        cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
+        conn.commit()
+        conn.close()
+        return jsonify({"error": "Session expired. You have been logged out."}), 403
+
+    conn.close()
     return jsonify({"message": f"Account is active, expires in {round(minutes_remaining)} minutes"}), 200
 
 # ----------------------- RUN THE APP -----------------------
