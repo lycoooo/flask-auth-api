@@ -19,7 +19,6 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL,
             login_at TEXT,
             duration_minutes INTEGER NOT NULL,
             session_token TEXT
@@ -37,7 +36,7 @@ def register():
     username = data.get("username", "").strip()
     password = data.get("password", "").strip()
     secret = data.get("secret", "")
-    duration_minutes = int(data.get("expires_in", 43200))  # Default: 30 days
+    duration_minutes = int(data.get("expires_in", 43200))  # Default: 30 days (43200 minutes)
 
     if not username or not password:
         return jsonify({"error": "Username and password are required"}), 400
@@ -48,18 +47,16 @@ def register():
     if duration_minutes <= 0:
         return jsonify({"error": "Invalid expiration time"}), 400
 
-    # Hash password
     hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-    created_at = datetime.datetime.utcnow().isoformat()
 
     try:
         conn = sqlite3.connect("users.db")
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO users (username, password_hash, created_at, duration_minutes) VALUES (?, ?, ?, ?)", 
-                       (username, hashed_pw, created_at, duration_minutes))
+        cursor.execute("INSERT INTO users (username, password_hash, duration_minutes) VALUES (?, ?, ?)", 
+                       (username, hashed_pw, duration_minutes))
         conn.commit()
         conn.close()
-        return jsonify({"message": "User registered successfully", "duration_minutes": duration_minutes}), 201
+        return jsonify({"message": "User registered successfully", "expires_in": duration_minutes}), 201
     except sqlite3.IntegrityError:
         return jsonify({"error": "Username already exists"}), 400
 
@@ -125,62 +122,31 @@ def login():
         "expires_in": round(minutes_remaining)
     }), 200
 
-# ----------------------- LOGOUT -----------------------
-@app.route("/logout", methods=["POST"])
-def logout():
-    data = request.json
-    username = data.get("username", "").strip()
-    session_token = data.get("session_token", "").strip()
-
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT session_token FROM users WHERE username=?", (username,))
-    result = cursor.fetchone()
-
-    if not result or result[0] != session_token:
-        conn.close()
-        return jsonify({"error": "Invalid session"}), 401
-
-    cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
-    conn.commit()
-    conn.close()
-
-    return jsonify({"message": "✅ Logout successful"}), 200
-
 # ----------------------- CHECK EXPIRATION -----------------------
 @app.route("/check_expiration", methods=["POST"])
 def check_expiration():
     data = request.json
     username = data.get("username", "").strip()
-    session_token = data.get("session_token", "").strip()
 
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT login_at, duration_minutes, session_token FROM users WHERE username=?", (username,))
+    cursor.execute("SELECT login_at, duration_minutes FROM users WHERE username=?", (username,))
     result = cursor.fetchone()
 
     if not result:
         conn.close()
         return jsonify({"error": "User not found"}), 404
 
-    login_at, duration_minutes, stored_token = result
-
-    # If session token is invalid, user is already logged out
-    if stored_token != session_token:
+    login_at, duration_minutes = result
+    if not login_at:
         conn.close()
-        return jsonify({"error": "Session invalid. Please log in again."}), 403
+        return jsonify({"error": "User has not logged in yet"}), 400
 
-    # Calculate remaining time
-    login_time = datetime.datetime.fromisoformat(login_at)
-    expiration_time = login_time + datetime.timedelta(minutes=duration_minutes)
-    minutes_remaining = (expiration_time - datetime.datetime.utcnow()).total_seconds() / 60
+    expiry_date = datetime.datetime.fromisoformat(login_at) + datetime.timedelta(minutes=duration_minutes)
+    minutes_remaining = (expiry_date - datetime.datetime.utcnow()).total_seconds() / 60
 
-    # If session expired, log out user automatically
     if minutes_remaining <= 0:
-        cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
-        conn.commit()
-        conn.close()
-        return jsonify({"error": "Session expired. You have been logged out."}), 403
+        return jsonify({"error": "Account expired"}), 403
 
     conn.close()
     return jsonify({"message": f"Account is active, expires in {round(minutes_remaining)} minutes"}), 200
