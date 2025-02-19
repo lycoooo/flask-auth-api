@@ -1,158 +1,69 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import sqlite3
-import bcrypt
+import secrets
 import datetime
-import uuid
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # ✅ Enable CORS for frontend access
 
-SECRET_KEY = "MySecretKey123"  # Change this to your own secret key
+# 🔐 Fake database to store accounts
+accounts = []
 
-# Initialize Database
-def init_db():
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            login_at TEXT,
-            duration_minutes INTEGER NOT NULL,
-            session_token TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+# 🔑 Secret key for authentication
+SECRET_KEY = "MySecretKey123"
 
-init_db()
+# 🕒 Expiration mapping in minutes
+DURATION_MAPPING = {
+    "2m": 2,
+    "2h": 120,
+    "5h": 300,
+    "1d": 1440,
+    "3d": 4320,
+    "7d": 10080,
+    "30d": 43200
+}
 
-# ----------------------- REGISTER -----------------------
 @app.route("/register", methods=["POST"])
 def register():
-    data = request.json
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
-    secret = data.get("secret", "")
-    duration_minutes = int(data.get("expires_in", 43200))  # Default: 30 days (43200 minutes)
-
-    if not username or not password:
-        return jsonify({"error": "Username and password are required"}), 400
-
-    if secret != SECRET_KEY:
-        return jsonify({"error": "Unauthorized access"}), 403
-
-    if duration_minutes <= 0:
-        return jsonify({"error": "Invalid expiration time"}), 400
-
-    hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-
     try:
-        conn = sqlite3.connect("users.db")
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO users (username, password_hash, duration_minutes) VALUES (?, ?, ?)", 
-                       (username, hashed_pw, duration_minutes))
-        conn.commit()
-        conn.close()
-        return jsonify({"message": "User registered successfully", "expires_in": duration_minutes}), 201
-    except sqlite3.IntegrityError:
-        return jsonify({"error": "Username already exists"}), 400
+        data = request.get_json()
 
-# ----------------------- LOGIN -----------------------
-@app.route("/login", methods=["POST"])
-def login():
-    data = request.json
-    username = data.get("username", "").strip()
-    password = data.get("password", "").encode("utf-8")
+        # ✅ Check if secret key is correct
+        if data.get("secret") != SECRET_KEY:
+            return jsonify({"error": "Unauthorized access!"}), 403
 
-    if not username or not password:
-        return jsonify({"error": "Username and password are required"}), 400
+        password = data.get("password")
+        expires_in = int(data.get("expires_in", 1440))  # Default 1 Day
 
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT password_hash, login_at, duration_minutes, session_token FROM users WHERE username=?", (username,))
-    result = cursor.fetchone()
+        if not password:
+            return jsonify({"error": "Password is required!"}), 400
 
-    if not result:
-        conn.close()
-        return jsonify({"error": "Invalid username or password"}), 401  # Username not found
+        # ✅ Generate unique token
+        token = secrets.token_hex(16)
+        expiration_time = datetime.datetime.utcnow() + datetime.timedelta(minutes=expires_in)
 
-    stored_hash, login_at, duration_minutes, session_token = result
+        # 🛠️ Save to in-memory database
+        accounts.append({
+            "password": password,
+            "token": token,
+            "expires_at": expiration_time.strftime("%Y-%m-%d %H:%M:%S UTC")
+        })
 
-    # If the user has logged in before, check expiration
-    if login_at:
-        login_time = datetime.datetime.fromisoformat(login_at)
-        expiration_time = login_time + datetime.timedelta(minutes=duration_minutes)
-
-        if datetime.datetime.utcnow() > expiration_time:
-            # Auto-expire account
-            cursor.execute("UPDATE users SET session_token=NULL WHERE username=?", (username,))
-            conn.commit()
-            conn.close()
-            return jsonify({"error": "This account has expired. Contact the owner."}), 403
-
-    # Prevent duplicate logins (allow only one active session per user)
-    if session_token:
-        conn.close()
         return jsonify({
-            "error": "This account is already logged in on another device."
-        }), 403  # Removed "Please log out first"
+            "message": "User registered successfully",
+            "password": password,
+            "expires_at": expiration_time.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "token": token
+        }), 201
 
-    # Check password
-    if not bcrypt.checkpw(password, stored_hash):
-        conn.close()
-        return jsonify({"error": "Invalid username or password"}), 401  # Wrong password
-
-    # Generate a new session token
-    new_session_token = str(uuid.uuid4())
-    login_at = datetime.datetime.utcnow().isoformat()
-
-    cursor.execute("UPDATE users SET session_token=?, login_at=? WHERE username=?", 
-                   (new_session_token, login_at, username))
-    conn.commit()
-    conn.close()
-
-    expiration_time = datetime.datetime.fromisoformat(login_at) + datetime.timedelta(minutes=duration_minutes)
-    minutes_remaining = (expiration_time - datetime.datetime.utcnow()).total_seconds() / 60
-
-    return jsonify({
-        "message": "✅ Login successful!",
-        "session_token": new_session_token,
-        "expires_in": round(minutes_remaining)
-    }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
-# ----------------------- CHECK EXPIRATION -----------------------
-@app.route("/check_expiration", methods=["POST"])
-def check_expiration():
-    data = request.json
-    username = data.get("username", "").strip()
+@app.route("/accounts", methods=["GET"])
+def get_accounts():
+    return jsonify({"accounts": accounts})
 
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT login_at, duration_minutes FROM users WHERE username=?", (username,))
-    result = cursor.fetchone()
 
-    if not result:
-        conn.close()
-        return jsonify({"error": "User not found"}), 404
-
-    login_at, duration_minutes = result
-    if not login_at:
-        conn.close()
-        return jsonify({"error": "User has not logged in yet"}), 400
-
-    expiry_date = datetime.datetime.fromisoformat(login_at) + datetime.timedelta(minutes=duration_minutes)
-    minutes_remaining = (expiry_date - datetime.datetime.utcnow()).total_seconds() / 60
-
-    if minutes_remaining <= 0:
-        return jsonify({"error": "Account expired"}), 403
-
-    conn.close()
-    return jsonify({"message": f"Account is active, expires in {round(minutes_remaining)} minutes"}), 200
-
-# ----------------------- RUN THE APP -----------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(debug=True)
