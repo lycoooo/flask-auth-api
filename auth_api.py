@@ -1,3 +1,34 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import sqlite3
+import bcrypt
+import datetime
+import uuid
+
+app = Flask(__name__)
+CORS(app)
+
+SECRET_KEY = "MySecretKey123"  # Change this to your own secret key
+
+# Initialize Database
+def init_db():
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            login_at TEXT,
+            duration_minutes INTEGER NOT NULL,
+            session_token TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
 # ----------------------- LOGIN (Fixed Expiration Handling) -----------------------
 @app.route("/login", methods=["POST"])
 def login():
